@@ -53,8 +53,19 @@
 
 /******/ 	
 /******/ 	
+/******/ 	// Copied from https://github.com/facebook/react/blob/bef45b0/src/shared/utils/canDefineProperty.js
+/******/ 	var canDefineProperty = false;
+/******/ 	try {
+/******/ 		Object.defineProperty({}, "x", {
+/******/ 			get: function() {}
+/******/ 		});
+/******/ 		canDefineProperty = true;
+/******/ 	} catch(x) {
+/******/ 		// IE will fail on defineProperty
+/******/ 	}
+/******/ 	
 /******/ 	var hotApplyOnUpdate = true;
-/******/ 	var hotCurrentHash = "a465d00357c5a7424ca4"; // eslint-disable-line no-unused-vars
+/******/ 	var hotCurrentHash = "7581004fa4c73c296276"; // eslint-disable-line no-unused-vars
 /******/ 	var hotCurrentModuleData = {};
 /******/ 	var hotCurrentParents = []; // eslint-disable-line no-unused-vars
 /******/ 	
@@ -77,10 +88,26 @@
 /******/ 		};
 /******/ 		for(var name in __webpack_require__) {
 /******/ 			if(Object.prototype.hasOwnProperty.call(__webpack_require__, name)) {
-/******/ 				fn[name] = __webpack_require__[name];
+/******/ 				if(canDefineProperty) {
+/******/ 					Object.defineProperty(fn, name, (function(name) {
+/******/ 						return {
+/******/ 							configurable: true,
+/******/ 							enumerable: true,
+/******/ 							get: function() {
+/******/ 								return __webpack_require__[name];
+/******/ 							},
+/******/ 							set: function(value) {
+/******/ 								__webpack_require__[name] = value;
+/******/ 							}
+/******/ 						};
+/******/ 					}(name)));
+/******/ 				} else {
+/******/ 					fn[name] = __webpack_require__[name];
+/******/ 				}
 /******/ 			}
 /******/ 		}
-/******/ 		fn.e = function(chunkId, callback) {
+/******/ 	
+/******/ 		function ensure(chunkId, callback) {
 /******/ 			if(hotStatus === "ready")
 /******/ 				hotSetStatus("prepare");
 /******/ 			hotChunksLoading++;
@@ -103,7 +130,15 @@
 /******/ 					}
 /******/ 				}
 /******/ 			});
-/******/ 		};
+/******/ 		}
+/******/ 		if(canDefineProperty) {
+/******/ 			Object.defineProperty(fn, "e", {
+/******/ 				enumerable: true,
+/******/ 				value: ensure
+/******/ 			});
+/******/ 		} else {
+/******/ 			fn.e = ensure;
+/******/ 		}
 /******/ 		return fn;
 /******/ 	}
 /******/ 	
@@ -561,10 +596,13 @@
 	var SockJS = __webpack_require__(8);
 	var stripAnsi = __webpack_require__(72);
 	var scriptElements = document.getElementsByTagName("script");
+	var scriptHost = scriptElements[scriptElements.length-1].getAttribute("src").replace(/\/[^\/]+$/, "");
 
+	// If this bundle is inlined, use the resource query to get the correct url.
+	// Else, get the url from the <script> this file was called with.
 	var urlParts = url.parse( true ?
 		__resourceQuery.substr(1) :
-		scriptElements[scriptElements.length-1].getAttribute("src").replace(/\/[^\/]+$/, "")
+		(scriptHost ? scriptHost : "/")
 	);
 
 	var sock = null;
@@ -2142,7 +2180,7 @@
 	  debug = __webpack_require__(20)('sockjs-client:websocket');
 	}
 
-	function WebSocketTransport(transUrl) {
+	function WebSocketTransport(transUrl, ignore, options) {
 	  if (!WebSocketTransport.enabled()) {
 	    throw new Error('Transport created when disabled');
 	  }
@@ -2159,7 +2197,7 @@
 	  }
 	  this.url = url;
 
-	  this.ws = new WebsocketDriver(this.url);
+	  this.ws = new WebsocketDriver(this.url, [], options);
 	  this.ws.onmessage = function(e) {
 	    debug('message event', e.data);
 	    self.emit('message', e.data);
@@ -2242,6 +2280,9 @@
 	var queueIndex = -1;
 
 	function cleanUpNextTick() {
+	    if (!draining || !currentQueue) {
+	        return;
+	    }
 	    draining = false;
 	    if (currentQueue.length) {
 	        queue = currentQueue.concat(queue);
@@ -2528,7 +2569,8 @@
 	var required = __webpack_require__(17)
 	  , lolcation = __webpack_require__(18)
 	  , qs = __webpack_require__(19)
-	  , relativere = /^\/(?!\/)/;
+	  , relativere = /^\/(?!\/)/
+	  , protocolre = /^([a-z0-9.+-]+:)?(\/\/)?(.*)$/i; // actual protocol is first match
 
 	/**
 	 * These are the parse instructions for the URL parsers, it informs the parser
@@ -2545,13 +2587,36 @@
 	var instructions = [
 	  ['#', 'hash'],                        // Extract from the back.
 	  ['?', 'query'],                       // Extract from the back.
-	  ['//', 'protocol', 2, 1, 1],          // Extract from the front.
 	  ['/', 'pathname'],                    // Extract from the back.
 	  ['@', 'auth', 1],                     // Extract from the front.
 	  [NaN, 'host', undefined, 1, 1],       // Set left over value.
 	  [/\:(\d+)$/, 'port'],                 // RegExp the back.
 	  [NaN, 'hostname', undefined, 1, 1]    // Set left over.
 	];
+
+	 /**
+	 * @typedef ProtocolExtract
+	 * @type Object
+	 * @property {String} protocol Protocol matched in the URL, in lowercase
+	 * @property {Boolean} slashes Indicates whether the protocol is followed by double slash ("//")
+	 * @property {String} rest     Rest of the URL that is not part of the protocol
+	 */
+
+	 /**
+	  * Extract protocol information from a URL with/without double slash ("//")
+	  *
+	  * @param  {String} address   URL we want to extract from.
+	  * @return {ProtocolExtract}  Extracted information
+	  * @private
+	  */
+	function extractProtocol(address) {
+	  var match = protocolre.exec(address);
+	  return {
+	    protocol: match[1] ? match[1].toLowerCase() : '',
+	    slashes: !!match[2],
+	    rest: match[3] ? match[3] : ''
+	  };
+	}
 
 	/**
 	 * The actual URL instance. Instead of returning an object we've opted-in to
@@ -2560,8 +2625,8 @@
 	 *
 	 * @constructor
 	 * @param {String} address URL we want to parse.
-	 * @param {Boolean|function} parser Parser for the query string.
-	 * @param {Object} location Location defaults for relative paths.
+	 * @param {Object|String} location Location defaults for relative paths.
+	 * @param {Boolean|Function} parser Parser for the query string.
 	 * @api public
 	 */
 	function URL(address, location, parser) {
@@ -2596,6 +2661,12 @@
 	  }
 
 	  location = lolcation(location);
+
+	  // extract protocol information before running the instructions
+	  var extracted = extractProtocol(address);
+	  url.protocol = extracted.protocol || location.protocol || '';
+	  url.slashes = extracted.slashes || location.slashes;
+	  address = extracted.rest;
 
 	  for (; i < instructions.length; i++) {
 	    instruction = instructions[i];
@@ -2667,8 +2738,12 @@
 	 * This is convenience method for changing properties in the URL instance to
 	 * insure that they all propagate correctly.
 	 *
-	 * @param {String} prop Property we need to adjust.
-	 * @param {Mixed} value The newly assigned value.
+	 * @param {String} prop          Property we need to adjust.
+	 * @param {Mixed} value          The newly assigned value.
+	 * @param {Boolean|Function} fn  When setting the query, it will be the function used to parse
+	 *                               the query.
+	 *                               When setting the protocol, double slash will be removed from
+	 *                               the final url if it is true.
 	 * @returns {URL}
 	 * @api public
 	 */
@@ -2703,6 +2778,9 @@
 	      url.hostname = value[0];
 	      url.port = value[1];
 	    }
+	  } else if ('protocol' === part) {
+	    url.protocol = value;
+	    url.slashes = !fn;
 	  } else {
 	    url[part] = value;
 	  }
@@ -2723,7 +2801,11 @@
 
 	  var query
 	    , url = this
-	    , result = url.protocol +'//';
+	    , protocol = url.protocol;
+
+	  if (protocol && protocol.charAt(protocol.length - 1) !== ':') protocol += ':';
+
+	  var result = protocol + (url.slashes ? '//' : '');
 
 	  if (url.username) {
 	    result += url.username;
@@ -2803,9 +2885,11 @@
 
 	/* WEBPACK VAR INJECTION */(function(global) {'use strict';
 
+	var slashes = /^[A-Za-z][A-Za-z0-9+-.]*:\/\//;
+
 	/**
 	 * These properties should not be copied or inherited from. This is only needed
-	 * for all non blob URL's as the a blob URL does not include a hash, only the
+	 * for all non blob URL's as a blob URL does not include a hash, only the
 	 * origin.
 	 *
 	 * @type {Object}
@@ -2822,7 +2906,7 @@
 	 * encoded in the `pathname` so we can thankfully generate a good "default"
 	 * location from it so we can generate proper relative URL's again.
 	 *
-	 * @param {Object} loc Optional default location object.
+	 * @param {Object|String} loc Optional default location object.
 	 * @returns {Object} lolcation object.
 	 * @api public
 	 */
@@ -2839,9 +2923,15 @@
 	  } else if ('string' === type) {
 	    finaldestination = new URL(loc, {});
 	    for (key in ignore) delete finaldestination[key];
-	  } else if ('object' === type) for (key in loc) {
-	    if (key in ignore) continue;
-	    finaldestination[key] = loc[key];
+	  } else if ('object' === type) {
+	    for (key in loc) {
+	      if (key in ignore) continue;
+	      finaldestination[key] = loc[key];
+	    }
+
+	    if (finaldestination.slashes === undefined) {
+	      finaldestination.slashes = slashes.test(loc.href);
+	    }
 	  }
 
 	  return finaldestination;
@@ -3493,12 +3583,18 @@
 	  this.on(type, g);
 	};
 
-	EventEmitter.prototype.emit = function(type) {
+	EventEmitter.prototype.emit = function() {
+	  var type = arguments[0];
 	  var listeners = this._listeners[type];
 	  if (!listeners) {
 	    return;
 	  }
-	  var args = Array.prototype.slice.call(arguments, 1);
+	  // equivalent of Array.prototype.slice.call(arguments, 1);
+	  var l = arguments.length;
+	  var args = new Array(l - 1);
+	  for (var ai = 1; ai < l; ai++) {
+	    args[ai - 1] = arguments[ai];
+	  }
 	  for (var i = 0; i < listeners.length; i++) {
 	    listeners[i].apply(this, args);
 	  }
@@ -3554,9 +3650,11 @@
 	  }
 	};
 
-	EventTarget.prototype.dispatchEvent = function(event) {
+	EventTarget.prototype.dispatchEvent = function() {
+	  var event = arguments[0];
 	  var t = event.type;
-	  var args = Array.prototype.slice.call(arguments, 0);
+	  // equivalent of Array.prototype.slice.call(arguments, 0);
+	  var args = arguments.length === 1 ? [event] : Array.apply(null, arguments);
 	  // TODO: This doesn't match the real behavior; per spec, onfoo get
 	  // their place in line from the /first/ time they're set from
 	  // non-null. Although WebKit bumps it to the end every time it's
@@ -3580,7 +3678,14 @@
 /* 26 */
 /***/ function(module, exports) {
 
-	/* WEBPACK VAR INJECTION */(function(global) {module.exports = global.WebSocket || global.MozWebSocket;
+	/* WEBPACK VAR INJECTION */(function(global) {'use strict';
+
+	var Driver = global.WebSocket || global.MozWebSocket;
+	if (Driver) {
+		module.exports = function WebSocketBrowserDriver(url) {
+			return new Driver(url);
+		};
+	}
 
 	/* WEBPACK VAR INJECTION */}.call(exports, (function() { return this; }())))
 
@@ -3653,7 +3758,7 @@
 	    debug('create ajax sender', url, payload);
 	    var opt = {};
 	    if (typeof payload === 'string') {
-	      opt.headers = {'Content-type':'text/plain'};
+	      opt.headers = {'Content-type': 'text/plain'};
 	    }
 	    var ajaxUrl = urlUtils.addPath(url, '/xhr_send');
 	    var xo = new AjaxObject('POST', ajaxUrl, payload, opt);
@@ -4031,7 +4136,9 @@
 
 	  try {
 	    this.xhr = new XHR();
-	  } catch (x) {}
+	  } catch (x) {
+	    // intentionally empty
+	  }
 
 	  if (!this.xhr) {
 	    debug('no xhr');
@@ -4092,7 +4199,9 @@
 	        try {
 	          status = x.status;
 	          text = x.responseText;
-	        } catch (e) {}
+	        } catch (e) {
+	          // intentionally empty
+	        }
 	        debug('status', status);
 	        // IE returns 1223 for 204: http://bugs.jquery.com/ticket/1450
 	        if (status === 1223) {
@@ -4151,7 +4260,9 @@
 	  if (abort) {
 	    try {
 	      this.xhr.abort();
-	    } catch (x) {}
+	    } catch (x) {
+	      // intentionally empty
+	    }
 	  }
 	  this.unloadRef = this.xhr = null;
 	};
@@ -4180,7 +4291,9 @@
 	var cors = false;
 	try {
 	  cors = 'withCredentials' in new XHR();
-	} catch (ignored) {}
+	} catch (ignored) {
+	  // intentionally empty
+	}
 
 	AbstractXHRObject.supportsCORS = cors;
 
@@ -4374,7 +4487,9 @@
 	  if (abort) {
 	    try {
 	      this.xdr.abort();
-	    } catch (x) {}
+	    } catch (x) {
+	      // intentionally empty
+	    }
 	  }
 	  this.unloadRef = this.xdr = null;
 	};
@@ -4608,7 +4723,9 @@
 	      // When the iframe is not loaded, IE raises an exception
 	      // on 'contentWindow'.
 	      this.postMessage('c');
-	    } catch (x) {}
+	    } catch (x) {
+	      // intentionally empty
+	    }
 	    this.iframeObj.cleanup();
 	    this.iframeObj = null;
 	    this.onmessageCallback = this.iframeObj = null;
@@ -5609,7 +5726,8 @@
 /* 46 */
 /***/ function(module, exports) {
 
-	module.exports = '1.0.3';
+	module.exports = '1.1.1';
+
 
 /***/ },
 /* 47 */
@@ -5658,7 +5776,9 @@
 	      // Explorer had problems with that.
 	      try {
 	        iframe.onload = null;
-	      } catch (x) {}
+	      } catch (x) {
+	        // intentionally empty
+	      }
 	      iframe.onerror = null;
 	    };
 	    var cleanup = function() {
@@ -5694,7 +5814,9 @@
 	            iframe.contentWindow.postMessage(msg, origin);
 	          }
 	        }, 0);
-	      } catch (x) {}
+	      } catch (x) {
+	        // intentionally empty
+	      }
 	    };
 
 	    iframe.src = iframeUrl;
@@ -5744,7 +5866,7 @@
 	        CollectGarbage();
 	      }
 	    };
-	    var onerror = function(r)  {
+	    var onerror = function(r) {
 	      debug('onerror', r);
 	      if (doc) {
 	        cleanup();
@@ -5760,7 +5882,9 @@
 	              iframe.contentWindow.postMessage(msg, origin);
 	          }
 	        }, 0);
-	      } catch (x) {}
+	      } catch (x) {
+	        // intentionally empty
+	      }
 	    };
 
 	    doc.open();
@@ -5943,7 +6067,9 @@
 	if (axo in global) {
 	  try {
 	    HtmlfileReceiver.htmlfileEnabled = !!new global[axo]('htmlfile');
-	  } catch (x) {}
+	  } catch (x) {
+	    // intentionally empty
+	  }
 	}
 
 	HtmlfileReceiver.enabled = HtmlfileReceiver.htmlfileEnabled || iframeUtils.iframeEnabled;
@@ -6197,7 +6323,9 @@
 	        try {
 	          // In IE, actually execute the script.
 	          script.onclick();
-	        } catch (x) {}
+	        } catch (x) {
+	          // intentionally empty
+	        }
 	      }
 	      if (script) {
 	        self._abort(new Error('JSONP script loaded abnormally (onreadystatechange)'));
@@ -6223,7 +6351,9 @@
 	      try {
 	        script.htmlFor = script.id;
 	        script.event = 'onclick';
-	      } catch (x) {}
+	      } catch (x) {
+	        // intentionally empty
+	      }
 	      script.async = true;
 	    } else {
 	      // Opera, second sync script hack
@@ -6382,9 +6512,7 @@
 
 	var debug = function() {};
 	if (process.env.NODE_ENV !== 'production') {
-	  // Make debug module available globally so you can enable via the console easily
-	  global.dbg = __webpack_require__(20);
-	  debug = global.dbg('sockjs-client:main');
+	  debug = __webpack_require__(20)('sockjs-client:main');
 	}
 
 	var transports;
@@ -6409,6 +6537,7 @@
 	    log.warn("'protocols_whitelist' is DEPRECATED. Use 'transports' instead.");
 	  }
 	  this._transportsWhitelist = options.transports;
+	  this._transportOptions = options.transportOptions || {};
 
 	  var sessionId = options.sessionId || 8;
 	  if (typeof sessionId === 'function') {
@@ -6418,7 +6547,7 @@
 	      return random.string(sessionId);
 	    };
 	  } else {
-	    throw new TypeError("If sessionId is used in the options, it needs to be a number or a function.");
+	    throw new TypeError('If sessionId is used in the options, it needs to be a number or a function.');
 	  }
 
 	  this._server = options.server || random.numberString(1000);
@@ -6574,8 +6703,9 @@
 	    debug('using timeout', timeoutMs);
 
 	    var transportUrl = urlUtils.addPath(this._transUrl, '/' + this._server + '/' + this._generateSessionId());
+	    var options = this._transportOptions[Transport.transportName];
 	    debug('transport url', transportUrl);
-	    var transportObj = new Transport(transportUrl, this._transUrl);
+	    var transportObj = new Transport(transportUrl, this._transUrl, options);
 	    transportObj.on('message', this._transportMessage.bind(this));
 	    transportObj.once('close', this._transportClose.bind(this));
 	    transportObj.transportName = Transport.transportName;
@@ -7340,7 +7470,14 @@
 
 	var logObject = {};
 	['log', 'debug', 'warn'].forEach(function (level) {
-	  var levelExists = global.console && global.console[level] && global.console[level].apply;
+	  var levelExists;
+
+	  try {
+	    levelExists = global.console && global.console[level] && global.console[level].apply;
+	  } catch(e) {
+	    // do nothing
+	  }
+
 	  logObject[level] = levelExists ? function () {
 	    return global.console[level].apply(global.console, arguments);
 	  } : (level === 'log' ? function () {} : logObject.log);
@@ -7369,11 +7506,11 @@
 	};
 
 	Event.prototype.stopPropagation = function() {};
-	Event.prototype.preventDefault  = function() {};
+	Event.prototype.preventDefault = function() {};
 
 	Event.CAPTURING_PHASE = 1;
-	Event.AT_TARGET       = 2;
-	Event.BUBBLING_PHASE  = 3;
+	Event.AT_TARGET = 2;
+	Event.BUBBLING_PHASE = 3;
 
 	module.exports = Event;
 
@@ -7812,7 +7949,7 @@
 	        debug(version, transport, transUrl, baseUrl);
 	        // change this to semver logic
 	        if (version !== SockJS.version) {
-	          throw new Error('Incompatibile SockJS! Main site uses:' +
+	          throw new Error('Incompatible SockJS! Main site uses:' +
 	                    ' "' + version + '", the iframe:' +
 	                    ' "' + SockJS.version + '".');
 	        }
@@ -9634,7 +9771,7 @@
 	 * will remain to ensure logic does not differ in production.
 	 */
 
-	var invariant = function (condition, format, a, b, c, d, e, f) {
+	function invariant(condition, format, a, b, c, d, e, f) {
 	  if (process.env.NODE_ENV !== 'production') {
 	    if (format === undefined) {
 	      throw new Error('invariant requires an error message argument');
@@ -9648,15 +9785,16 @@
 	    } else {
 	      var args = [a, b, c, d, e, f];
 	      var argIndex = 0;
-	      error = new Error('Invariant Violation: ' + format.replace(/%s/g, function () {
+	      error = new Error(format.replace(/%s/g, function () {
 	        return args[argIndex++];
 	      }));
+	      error.name = 'Invariant Violation';
 	    }
 
 	    error.framesToPop = 1; // we don't care about invariant's own frame
 	    throw error;
 	  }
-	};
+	}
 
 	module.exports = invariant;
 	/* WEBPACK VAR INJECTION */}.call(exports, __webpack_require__(11)))
@@ -14768,6 +14906,10 @@
 	  }
 	};
 
+	function registerNullComponentID() {
+	  ReactEmptyComponentRegistry.registerNullComponentID(this._rootNodeID);
+	}
+
 	var ReactEmptyComponent = function (instantiate) {
 	  this._currentElement = null;
 	  this._rootNodeID = null;
@@ -14776,7 +14918,7 @@
 	assign(ReactEmptyComponent.prototype, {
 	  construct: function (element) {},
 	  mountComponent: function (rootID, transaction, context) {
-	    ReactEmptyComponentRegistry.registerNullComponentID(rootID);
+	    transaction.getReactMountReady().enqueue(registerNullComponentID, this);
 	    this._rootNodeID = rootID;
 	    return ReactReconciler.mountComponent(this._renderedComponent, rootID, transaction, context);
 	  },
@@ -17669,6 +17811,7 @@
 	 */
 	var EventInterface = {
 	  type: null,
+	  target: null,
 	  // currentTarget is set when dispatching; no use in copying it here
 	  currentTarget: emptyFunction.thatReturnsNull,
 	  eventPhase: null,
@@ -17702,8 +17845,6 @@
 	  this.dispatchConfig = dispatchConfig;
 	  this.dispatchMarker = dispatchMarker;
 	  this.nativeEvent = nativeEvent;
-	  this.target = nativeEventTarget;
-	  this.currentTarget = nativeEventTarget;
 
 	  var Interface = this.constructor.Interface;
 	  for (var propName in Interface) {
@@ -17714,7 +17855,11 @@
 	    if (normalize) {
 	      this[propName] = normalize(nativeEvent);
 	    } else {
-	      this[propName] = nativeEvent[propName];
+	      if (propName === 'target') {
+	        this.target = nativeEventTarget;
+	      } else {
+	        this[propName] = nativeEvent[propName];
+	      }
 	    }
 	  }
 
@@ -18877,8 +19022,8 @@
 	     */
 	    // autoCapitalize and autoCorrect are supported in Mobile Safari for
 	    // keyboard hints.
-	    autoCapitalize: null,
-	    autoCorrect: null,
+	    autoCapitalize: MUST_USE_ATTRIBUTE,
+	    autoCorrect: MUST_USE_ATTRIBUTE,
 	    // autoSave allows WebKit/Blink to persist values of input fields on page reloads
 	    autoSave: null,
 	    // color is for Safari mask-icon link
@@ -18909,9 +19054,7 @@
 	    httpEquiv: 'http-equiv'
 	  },
 	  DOMPropertyNames: {
-	    autoCapitalize: 'autocapitalize',
 	    autoComplete: 'autocomplete',
-	    autoCorrect: 'autocorrect',
 	    autoFocus: 'autofocus',
 	    autoPlay: 'autoplay',
 	    autoSave: 'autosave',
@@ -21565,7 +21708,10 @@
 	      }
 	    });
 
-	    nativeProps.children = content;
+	    if (content) {
+	      nativeProps.children = content;
+	    }
+
 	    return nativeProps;
 	  }
 
@@ -21990,7 +22136,7 @@
 	    var value = LinkedValueUtils.getValue(props);
 
 	    if (value != null) {
-	      updateOptions(this, props, value);
+	      updateOptions(this, Boolean(props.multiple), value);
 	    }
 	  }
 	}
@@ -25025,11 +25171,14 @@
 	 * @typechecks
 	 */
 
+	/* eslint-disable fb-www/typeof-undefined */
+
 	/**
 	 * Same as document.activeElement but wraps in a try-catch block. In IE it is
 	 * not safe to call document.activeElement if there is nothing focused.
 	 *
-	 * The activeElement will be null only if the document or document body is not yet defined.
+	 * The activeElement will be null only if the document or document body is not
+	 * yet defined.
 	 */
 	'use strict';
 
@@ -25037,7 +25186,6 @@
 	  if (typeof document === 'undefined') {
 	    return null;
 	  }
-
 	  try {
 	    return document.activeElement || document.body;
 	  } catch (e) {
@@ -26777,7 +26925,9 @@
 	  'setValueForProperty': 'update attribute',
 	  'setValueForAttribute': 'update attribute',
 	  'deleteValueForProperty': 'remove attribute',
-	  'dangerouslyReplaceNodeWithMarkupByID': 'replace'
+	  'setValueForStyles': 'update styles',
+	  'replaceNodeWithMarkup': 'replace',
+	  'updateTextContent': 'set textContent'
 	};
 
 	function getTotalTime(measurements) {
@@ -26969,18 +27119,23 @@
 	'use strict';
 
 	var performance = __webpack_require__(230);
-	var curPerformance = performance;
+
+	var performanceNow;
 
 	/**
 	 * Detect if we can use `window.performance.now()` and gracefully fallback to
 	 * `Date.now()` if it doesn't exist. We need to support Firefox < 15 for now
 	 * because of Facebook's testing infrastructure.
 	 */
-	if (!curPerformance || !curPerformance.now) {
-	  curPerformance = Date;
+	if (performance.now) {
+	  performanceNow = function () {
+	    return performance.now();
+	  };
+	} else {
+	  performanceNow = function () {
+	    return Date.now();
+	  };
 	}
-
-	var performanceNow = curPerformance.now.bind(curPerformance);
 
 	module.exports = performanceNow;
 
@@ -27029,7 +27184,7 @@
 
 	'use strict';
 
-	module.exports = '0.14.3';
+	module.exports = '0.14.8';
 
 /***/ },
 /* 232 */
@@ -28678,6 +28833,7 @@
 	    this.onChange = props.inputAttributes.onChange || function () {};
 	    this.onFocus = props.inputAttributes.onFocus || function () {};
 	    this.onBlur = props.inputAttributes.onBlur || function () {};
+	    this.onKeyDown = props.inputAttributes.onKeyDown || function () {};
 	    this.lastSuggestionsInputValue = null; // Helps to deal with delayed requests
 	    this.justUnfocused = false; // Helps to avoid calling onSuggestionUnfocused
 	    // twice when mouse is moving between suggestions
@@ -29021,6 +29177,8 @@
 
 	          break;
 	      }
+
+	      this.onKeyDown(event);
 	    }
 	  }, {
 	    key: 'onInputFocus',
@@ -29329,6 +29487,8 @@
 	  value: true
 	});
 
+	var _slicedToArray = (function () { function sliceIterator(arr, i) { var _arr = []; var _n = true; var _d = false; var _e = undefined; try { for (var _i = arr[Symbol.iterator](), _s; !(_n = (_s = _i.next()).done); _n = true) { _arr.push(_s.value); if (i && _arr.length === i) break; } } catch (err) { _d = true; _e = err; } finally { try { if (!_n && _i['return']) _i['return'](); } finally { if (_d) throw _e; } } return _arr; } return function (arr, i) { if (Array.isArray(arr)) { return arr; } else if (Symbol.iterator in Object(arr)) { return sliceIterator(arr, i); } else { throw new TypeError('Invalid attempt to destructure non-iterable instance'); } }; })();
+
 	function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { 'default': obj }; }
 
 	function _toConsumableArray(arr) { if (Array.isArray(arr)) { for (var i = 0, arr2 = Array(arr.length); i < arr.length; i++) arr2[i] = arr[i]; return arr2; } else { return Array.from(arr); } }
@@ -29341,7 +29501,14 @@
 	  return x;
 	};
 
-	exports['default'] = function (theme) {
+	exports['default'] = function (input) {
+	  var _ref = Array.isArray(input) && input.length === 2 ? input : [input, null];
+
+	  var _ref2 = _slicedToArray(_ref, 2);
+
+	  var theme = _ref2[0];
+	  var classNameDecorator = _ref2[1];
+
 	  return function (key) {
 	    for (var _len = arguments.length, names = Array(_len > 1 ? _len - 1 : 0), _key = 1; _key < _len; _key++) {
 	      names[_key - 1] = arguments[_key];
@@ -29351,7 +29518,7 @@
 	      return theme[name];
 	    }).filter(truthy);
 
-	    return typeof styles[0] === 'string' ? { key: key, className: styles.join(' ') } : { key: key, style: _objectAssign2['default'].apply(undefined, [{}].concat(_toConsumableArray(styles))) };
+	    return typeof styles[0] === 'string' || typeof classNameDecorator === 'function' ? { key: key, className: classNameDecorator ? classNameDecorator.apply(undefined, _toConsumableArray(styles)) : styles.join(' ') } : { key: key, style: _objectAssign2['default'].apply(undefined, [{}].concat(_toConsumableArray(styles))) };
 	  };
 	};
 

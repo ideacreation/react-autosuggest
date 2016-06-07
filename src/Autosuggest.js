@@ -60,6 +60,7 @@ export default class Autosuggest extends Component {
     this.onChange = props.inputAttributes.onChange || (() => {});
     this.onFocus = props.inputAttributes.onFocus || (() => {});
     this.onBlur = props.inputAttributes.onBlur || (() => {});
+    this.onKeyDown = props.inputAttributes.onKeyDown || (() => {});
     this.lastSuggestionsInputValue = null; // Helps to deal with delayed requests
     this.justUnfocused = false; // Helps to avoid calling onSuggestionUnfocused
                                 // twice when mouse is moving between suggestions
@@ -374,6 +375,8 @@ export default class Autosuggest extends Component {
 
         break;
     }
+
+    this.onKeyDown(event);
   }
 
   onInputFocus(event) {
